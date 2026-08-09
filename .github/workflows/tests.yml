@@ -1,0 +1,87 @@
+name: Selenium Tests
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:  # allows manual trigger from GitHub UI
+
+permissions:
+  contents: write   # required so the GitHub Pages deploy step can push to gh-pages
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Restore previous dashboard history
+        run: |
+          mkdir -p dashboard
+          git fetch origin gh-pages:refs/remotes/origin/gh-pages --depth=1 2>/dev/null || true
+          if git show origin/gh-pages:history.json > dashboard/history.json 2>/dev/null; then
+            echo "Restored history.json from gh-pages"
+          else
+            echo "No existing gh-pages history.json found (first run)"
+            rm -f dashboard/history.json
+          fi
+        continue-on-error: true
+
+      - name: Run tests
+        id: run_tests
+        continue-on-error: true
+        # ubuntu-latest ships Chrome pre-installed, and Selenium Manager (bundled
+        # with Selenium.WebDriver) downloads a matching chromedriver on first use -
+        # no separate browser/driver install step needed, unlike the Playwright
+        # pipeline. HEADLESS=true is required since CI runners have no display.
+        env:
+          HEADLESS: "true"
+        run: dotnet test --no-build --logger "junit;LogFileName=TestResults.xml"
+
+      - name: Generate dashboard report
+        run: node Scripts/generate-report.js
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-dashboard
+          path: dashboard/
+          retention-days: 30
+
+      # Publishes the dashboard to GitHub Pages so it's viewable at a stable,
+      # shareable URL (https://<user>.github.io/<repo>/) instead of only as a
+      # downloadable artifact - good for linking from the README. Requires
+      # Pages to be enabled for this repo once (Settings -> Pages -> Source:
+      # Deploy from a branch -> gh-pages -> / (root)). Runs on every push to
+      # master, so the live link always reflects the most recent run.
+      - name: Deploy dashboard to GitHub Pages
+        if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dashboard
+
+      - name: Fail workflow if any test failed
+        if: steps.run_tests.outcome == 'failure'
+        run: exit 1
