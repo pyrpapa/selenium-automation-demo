@@ -1,0 +1,1 @@
+This is a test file used by the Selenium file upload/download demo tests.
